@@ -8,7 +8,19 @@
   "local"
   "type"
   "export"
+  "const"
+  "declare"
+  "extern"
+  "class"
+  "extends"
+  "with"
 ] @keyword
+
+(object_type
+  access_qualifier: _ @keyword.modifier)
+
+(declare_member
+  access_qualifier: _ @keyword.modifier)
 
 (do_statement
   [
@@ -90,6 +102,24 @@
     "end"
   ] @keyword.function)
 
+(type_function
+  [
+    "function"
+    "end"
+  ] @keyword.function)
+
+(const_statement
+  [
+    "function"
+    "end"
+  ] @keyword.function)
+
+(declare_statement
+  "function" @keyword.function)
+
+(declare_member
+  "function" @keyword.function)
+
 ; Operators
 [
   "and"
@@ -149,8 +179,35 @@
 (type_definition
   "type"
   .
-  (type) @type.definition
-  "=")
+  (identifier) @type.definition)
+
+(generic_type_list_with_defaults
+  (identifier) @type)
+
+(generic_type_list_with_defaults
+  [
+    "<"
+    ">"
+  ] @punctuation.bracket)
+
+(declare_statement
+  [
+    "type"
+    "class"
+  ]
+  .
+  name: (identifier) @type.definition)
+
+; Attributes
+(attribute
+  [
+    "@"
+    "@["
+  ] @attribute
+  attribute_name: (identifier)? @attribute)
+
+(parattr
+  attribute_name: (identifier) @attribute)
 
 ; Constants
 ((identifier) @constant
@@ -188,6 +245,21 @@
   ] @constructor)
 
 ; Functions
+(type_function
+  name: (identifier) @function)
+
+(const_statement
+  "function"
+  name: (identifier) @function)
+
+(declare_statement
+  "function"
+  name: (identifier) @function)
+
+(declare_member
+  "function"
+  name: (identifier) @function.method)
+
 (parameter
   .
   (identifier) @variable.parameter)

@@ -27,6 +27,20 @@ const PREC = {
   POWER: 13, // ^
 };
 
+// Luau's builtin type names, except `nil`, which is reserved.
+const BUILTIN_TYPES = [
+  'thread',
+  'buffer',
+  'any',
+  'userdata',
+  'unknown',
+  'never',
+  'string',
+  'number',
+  'table',
+  'boolean',
+];
+
 /**
  * Creates a rule to match one or more of the rules separated by a comma
  *
@@ -63,16 +77,14 @@ function sep1(rule, sep) {
 
 
 /**
- * Creates a rule to match two or more occurrences of `rule` separated by `sep`
+ * Creates a rule to match one or more of the rules separated by a comma or semicolon (Luau fieldsep)
  *
- * @param {RegExp | Rule | string} rule
- *
- * @param {RegExp | Rule | string} sep
+ * @param {Rule} rule
  *
  * @returns {SeqRule}
  */
-function sep2(rule, sep) {
-  return seq(rule, repeat1(seq(sep, rule)));
+function fieldsepSep1(rule) {
+  return seq(rule, repeat(seq(choice(',', ';'), rule)));
 }
 
 /**
@@ -87,6 +99,11 @@ module.exports = grammar(lua, {
     $.type,
   ]),
 
+  // `(A, b: B` is a tuple's or a function type's list until `)` and `->` decide.
+  conflicts: $ => [
+    [$.tuple_type, $.function_type],
+  ],
+
   rules: {
     // Luau has no goto and label statements, and has continue statements
     statement: ($, original) => choice(
@@ -96,7 +113,87 @@ module.exports = grammar(lua, {
       $.update_statement,
       $.continue_statement,
       $.type_definition,
+      $.type_function,
+      $.declare_statement,
+      $.const_statement,
     ),
+
+    const_statement: $ => choice(
+      seq(
+        repeat($.attribute),
+        'const',
+        'function',
+        field('name', $.identifier),
+        $._function_body,
+      ),
+      seq('const', alias($._local_variable_assignment, $.assignment_statement)),
+    ),
+
+    function_declaration: ($) =>
+      seq(repeat($.attribute), 'function', field('name', $._function_name), $._function_body),
+    _local_function_declaration: ($) =>
+      seq(repeat($.attribute), 'local', 'function', field('name', $.identifier), $._function_body),
+
+    function_definition: ($) => seq(repeat($.attribute), 'function', $._function_body),
+
+    attribute: $ => choice(
+      seq('@', field('attribute_name', alias(token.immediate(/[a-zA-Z_][a-zA-Z0-9_]*/), $.identifier))),
+      seq('@[', commaSep1($.parattr), ']'),
+    ),
+
+    parattr: $ => seq(
+      field('attribute_name', $.identifier),
+      optional($.attribute_arguments),
+    ),
+
+    attribute_arguments: $ => choice(
+      seq('(', optional(commaSep1($._attribute_literal)), ')'),
+      $._attribute_littable,
+      $.string,
+    ),
+
+    _attribute_literal: $ => choice(
+      'nil',
+      'false',
+      'true',
+      $.number,
+      $.string,
+      $._attribute_littable,
+    ),
+
+    _attribute_littable: $ => seq(
+      '{',
+      optional(seq(
+        $._attribute_litfield,
+        repeat(seq(choice(',', ';'), $._attribute_litfield)),
+        optional(choice(',', ';')),
+      )),
+      '}',
+    ),
+
+    _attribute_litfield: $ => seq(
+      optional(seq($.identifier, '=')),
+      $._attribute_literal,
+    ),
+
+    // Luau's const, declare, read and write are contextual: they stay usable as names.
+    variable: $ => choice(
+      $.identifier,
+      alias(choice('const', 'declare'), $.identifier),
+      $.bracket_index_expression,
+      $.dot_index_expression,
+    ),
+
+    _property_name: $ => choice(
+      $.identifier,
+      alias(choice('read', 'write'), $.identifier),
+      $._builtin_type_name,
+      $.object_field_type,
+    ),
+
+    // A builtin type's name is an ordinary NAME where a type names a field, a parameter or a
+    // module: `{ string: number }`, `(thread: thread) -> ()`, `number.Spring`.
+    _builtin_type_name: $ => alias(choice(...BUILTIN_TYPES), $.identifier),
 
     update_statement: $ => seq(
       alias($._variable_assignment_varlist, $.variable_list),
@@ -109,11 +206,80 @@ module.exports = grammar(lua, {
     type_definition: $ => seq(
       optional('export'),
       'type',
-      field('name', $.type),
+      field('name', $.identifier),
+      optional(field('generic_parameters', $.generic_type_list_with_defaults)),
       '=',
-      choice(
+      $.type,
+    ),
+
+    type_function: $ => seq(
+      optional('export'),
+      'type',
+      'function',
+      field('name', $.identifier),
+      $._function_body,
+    ),
+
+    generic_type_list_with_defaults: $ => seq(
+      '<',
+      commaSep1($._generic_type_parameter),
+      '>',
+    ),
+    _generic_type_parameter: $ => choice(
+      seq($.identifier, optional(seq('=', $.type))),
+      seq($.identifier, $.vararg_expression, optional(seq('=', $.type))),
+    ),
+
+    declare_statement: $ => choice(
+      seq(
+        repeat($.attribute),
+        'declare',
+        'function',
+        field('name', $.identifier),
+        optional($.generic_type_list),
+        field('parameters', $.parameters),
+        optional(seq(':', $.type)),
+      ),
+      seq(
+        'declare',
+        'extern',
+        'type',
+        field('name', $.identifier),
+        optional(seq('extends', field('super', $.type))),
+        optional('with'),
+        repeat($.declare_member),
+        'end',
+      ),
+      seq(
+        'declare',
+        'class',
+        field('name', $.identifier),
+        optional(seq('extends', field('super', $.type))),
+        repeat($.declare_member),
+        'end',
+      ),
+      seq(
+        'declare',
+        field('name', $.identifier),
+        ':',
+        field('type', $.type),
+      ),
+    ),
+
+    declare_member: $ => choice(
+      seq(
+        repeat($.attribute),
+        'function',
+        field('name', $.identifier),
+        optional($.generic_type_list),
+        field('parameters', $.parameters),
+        optional(seq(':', $.type)),
+      ),
+      seq(
+        optional(field('access_qualifier', choice('read', 'write'))),
+        $._property_name,
+        ':',
         $.type,
-        seq('typeof', '(', $.expression, ')'),
       ),
     ),
 
@@ -153,6 +319,7 @@ module.exports = grammar(lua, {
       $.tuple_type,
       $.function_type,
       $.generic_type,
+      $.generic_type_pack,
       $.object_type,
       $.empty_type,
       $.field_type,
@@ -161,30 +328,25 @@ module.exports = grammar(lua, {
       $.optional_type,
       $.literal_type,
       $.variadic_type,
+      $.typeof_type,
     ),
 
-    builtin_type: _ => choice(
-      'thread',
-      'buffer',
-      'any',
-      'userdata',
-      'unknown',
-      'never',
-      'string',
-      'number',
-      'table',
-      'boolean',
-      'nil',
-    ),
+    typeof_type: $ => seq('typeof', '(', $.expression, ')'),
+
+    builtin_type: _ => choice(...BUILTIN_TYPES, 'nil'),
 
     tuple_type: $ => seq('(', commaSep1($.type), ')'),
 
+    // FunctionType ::= ['<' GenericTypeList '>'] '(' [BoundTypeList] ')' '->' ReturnType, where
+    // BoundTypeList ::= [NAME ':'] Type [',' BoundTypeList] | GenericTypePack | VariadicTypePack:
+    // any parameter may be named, in any order, and a pack (a Type here) may close the list.
     function_type: $ => prec.right(seq(
+      optional($.generic_type_list),
       '(',
-      choice(
-        seq(commaSep(seq($.identifier, ':', $.type)), optional(seq(',', commaSep($.type)))),
-        commaSep($.type),
-      ),
+      commaSep(choice(
+        seq(choice($.identifier, $._builtin_type_name), ':', $.type),
+        $.type,
+      )),
       ')',
       '->',
       $.type,
@@ -193,31 +355,48 @@ module.exports = grammar(lua, {
     generic_type: $ => seq(
       $.type,
       token(prec(1, '<')),
-      commaSep(seq($.type, optional('...'))),
+      commaSep($.type),
       '>',
     ),
+
+    generic_type_pack: $ => seq($.identifier, '...'),
 
     object_type: $ => seq(
       '{',
       optional(choice(
-        commaSep1(
-          seq(choice($.identifier, $.object_field_type), ':', $.type),
-        ),
-        commaSep1($.type),
+        fieldsepSep1(seq(
+          optional(field('access_qualifier', choice('read', 'write'))),
+          $._property_name,
+          ':',
+          $.type,
+        )),
+        fieldsepSep1($.type),
       )),
-      optional(','),
+      optional(choice(',', ';')),
       '}',
     ),
 
     empty_type: _ => seq('(', ')'),
 
-    field_type: $ => sep2($.identifier, '.'),
+    // A module local may carry a builtin type's name: `number.Spring`.
+    field_type: $ => seq(
+      choice($.identifier, $._builtin_type_name),
+      repeat1(seq('.', $.identifier)),
+    ),
 
     object_field_type: $ => seq('[', $.type, ']'),
 
-    union_type: $ => prec.left(1, seq($.type, '|', $.type)),
+    // Union ::= [SimpleType {'?'}] {'|' SimpleType {'?'}} and Intersection ::= [SimpleType]
+    // {'&' SimpleType}: the first member is optional, so a type may open with `|` or `&`.
+    union_type: $ => choice(
+      prec.left(1, seq($.type, '|', $.type)),
+      prec.left(1, seq('|', $.type)),
+    ),
 
-    intersection_type: $ => prec.left(2, seq($.type, '&', $.type)),
+    intersection_type: $ => choice(
+      prec.left(2, seq($.type, '&', $.type)),
+      prec.left(2, seq('&', $.type)),
+    ),
 
     optional_type: $ => seq($.type, '?'),
 
@@ -395,9 +574,9 @@ module.exports = grammar(lua, {
     // Name
     identifier: _ => {
       const identifier_start =
-        /[^\p{Control}\s+\-*/%^#&~|<>=(){}\[\];:,.\\'"`?\d]/u;
+        /[^\p{Control}\s+\-*/%^#&~|<>=(){}\[\];:,.\\'"`?@\d]/u;
       const identifier_continue =
-        /[^\p{Control}\s+\-*/%^#&~|<>=(){}\[\];:,.\\'"`?]*/u;
+        /[^\p{Control}\s+\-*/%^#&~|<>=(){}\[\];:,.\\'"`?@]*/u;
       return token(seq(identifier_start, identifier_continue));
     },
   },
