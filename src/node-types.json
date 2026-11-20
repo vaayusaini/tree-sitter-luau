@@ -1144,6 +1144,10 @@
       "required": true,
       "types": [
         {
+          "type": "generic_type_list",
+          "named": true
+        },
+        {
           "type": "type",
           "named": true
         }

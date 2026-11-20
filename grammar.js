@@ -27,6 +27,20 @@ const PREC = {
   POWER: 13, // ^
 };
 
+// Luau's builtin type names, except `nil`, which is reserved.
+const BUILTIN_TYPES = [
+  'thread',
+  'buffer',
+  'any',
+  'userdata',
+  'unknown',
+  'never',
+  'string',
+  'number',
+  'table',
+  'boolean',
+];
+
 /**
  * Creates a rule to match one or more of the rules separated by a comma
  *
@@ -63,19 +77,6 @@ function sep1(rule, sep) {
 
 
 /**
- * Creates a rule to match two or more occurrences of `rule` separated by `sep`
- *
- * @param {RegExp | Rule | string} rule
- *
- * @param {RegExp | Rule | string} sep
- *
- * @returns {SeqRule}
- */
-function sep2(rule, sep) {
-  return seq(rule, repeat1(seq(sep, rule)));
-}
-
-/**
  * Creates a rule to match one or more of the rules separated by a comma or semicolon (Luau fieldsep)
  *
  * @param {Rule} rule
@@ -97,6 +98,11 @@ module.exports = grammar(lua, {
   supertypes: ($, original) => original.concat([
     $.type,
   ]),
+
+  // `(A, b: B` is a tuple's or a function type's list until `)` and `->` decide.
+  conflicts: $ => [
+    [$.tuple_type, $.function_type],
+  ],
 
   rules: {
     // Luau has no goto and label statements, and has continue statements
@@ -181,8 +187,13 @@ module.exports = grammar(lua, {
     _property_name: $ => choice(
       $.identifier,
       alias(choice('read', 'write'), $.identifier),
+      $._builtin_type_name,
       $.object_field_type,
     ),
+
+    // A builtin type's name is an ordinary NAME where a type names a field, a parameter or a
+    // module: `{ string: number }`, `(thread: thread) -> ()`, `number.Spring`.
+    _builtin_type_name: $ => alias(choice(...BUILTIN_TYPES), $.identifier),
 
     update_statement: $ => seq(
       alias($._variable_assignment_varlist, $.variable_list),
@@ -322,28 +333,20 @@ module.exports = grammar(lua, {
 
     typeof_type: $ => seq('typeof', '(', $.expression, ')'),
 
-    builtin_type: _ => choice(
-      'thread',
-      'buffer',
-      'any',
-      'userdata',
-      'unknown',
-      'never',
-      'string',
-      'number',
-      'table',
-      'boolean',
-      'nil',
-    ),
+    builtin_type: _ => choice(...BUILTIN_TYPES, 'nil'),
 
     tuple_type: $ => seq('(', commaSep1($.type), ')'),
 
+    // FunctionType ::= ['<' GenericTypeList '>'] '(' [BoundTypeList] ')' '->' ReturnType, where
+    // BoundTypeList ::= [NAME ':'] Type [',' BoundTypeList] | GenericTypePack | VariadicTypePack:
+    // any parameter may be named, in any order, and a pack (a Type here) may close the list.
     function_type: $ => prec.right(seq(
+      optional($.generic_type_list),
       '(',
-      choice(
-        seq(commaSep(seq($.identifier, ':', $.type)), optional(seq(',', commaSep($.type)))),
-        commaSep($.type),
-      ),
+      commaSep(choice(
+        seq(choice($.identifier, $._builtin_type_name), ':', $.type),
+        $.type,
+      )),
       ')',
       '->',
       $.type,
@@ -375,13 +378,25 @@ module.exports = grammar(lua, {
 
     empty_type: _ => seq('(', ')'),
 
-    field_type: $ => sep2($.identifier, '.'),
+    // A module local may carry a builtin type's name: `number.Spring`.
+    field_type: $ => seq(
+      choice($.identifier, $._builtin_type_name),
+      repeat1(seq('.', $.identifier)),
+    ),
 
     object_field_type: $ => seq('[', $.type, ']'),
 
-    union_type: $ => prec.left(1, seq($.type, '|', $.type)),
+    // Union ::= [SimpleType {'?'}] {'|' SimpleType {'?'}} and Intersection ::= [SimpleType]
+    // {'&' SimpleType}: the first member is optional, so a type may open with `|` or `&`.
+    union_type: $ => choice(
+      prec.left(1, seq($.type, '|', $.type)),
+      prec.left(1, seq('|', $.type)),
+    ),
 
-    intersection_type: $ => prec.left(2, seq($.type, '&', $.type)),
+    intersection_type: $ => choice(
+      prec.left(2, seq($.type, '&', $.type)),
+      prec.left(2, seq('&', $.type)),
+    ),
 
     optional_type: $ => seq($.type, '?'),
 
